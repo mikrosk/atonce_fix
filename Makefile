@@ -16,7 +16,7 @@ LIBCMINI_LIB     = $(PREFIX)/lib/libcmini
 LIBCMINI_STARTUP = $(LIBCMINI_LIB)
 
 CC      = $(CROSSPREFIX)gcc
-CFLAGS  = -O2 -fomit-frame-pointer -I$(LIBCMINI_INCLUDE)
+CFLAGS  = -O2 -fomit-frame-pointer -I$(LIBCMINI_INCLUDE) -Wall
 LDFLAGS = -L$(LIBCMINI_LIB) -lcmini -lgcc
 
 default: $(TARGET)
