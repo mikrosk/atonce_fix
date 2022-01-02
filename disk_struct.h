@@ -7,6 +7,8 @@ typedef uint8_t UBYTE;
 typedef uint16_t UWORD;
 typedef uint32_t ULONG;
 
+// ATARI
+
 struct partition_info
 {
   UBYTE flg;                    /* bit 0: active; bit 7: bootable */
@@ -27,6 +29,8 @@ struct rootsector
   UWORD checksum;                       /* checksum for bootable disks */
 } __attribute__((packed));
 
+// DOS
+
 typedef struct {
     UBYTE fill0[4];
     UBYTE type;
@@ -41,13 +45,7 @@ typedef struct {
     UWORD bootsig;
 } __attribute__((packed)) MBR;
 
-#define MAXPHYSSECTSIZE 512
-typedef union
-{
-    UBYTE sect[MAXPHYSSECTSIZE];
-    struct rootsector rs;
-    MBR mbr;
-} __attribute__((packed)) PHYSSECT;
+// ATARI/DOS
 
 struct fat16_bs {
   /*   0 */  UBYTE bra[2];
@@ -74,5 +72,13 @@ struct fat16_bs {
   /*  3e */  UBYTE data[0x1c0];
   /* 1fe */  UBYTE cksum[2];
 } __attribute__((packed));
+
+#define MAXPHYSSECTSIZE 512
+typedef union
+{
+    UBYTE sect[MAXPHYSSECTSIZE];
+    struct rootsector rs;
+    MBR mbr;
+} __attribute__((packed)) PHYSSECT;
 
 #endif
