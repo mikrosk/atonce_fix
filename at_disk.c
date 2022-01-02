@@ -2,21 +2,46 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include "byte_swap.h"
+#include "disk_struct.h"
 
 #define VERSION "0.1"
 
-static uint8_t sect[512];
+static PHYSSECT physsect;
 
 static void scan_disk(int bus_offset)
 {
     for (int i = 0; i < 8; ++i) {
-        printf("Checking disk #%d...", i);
-
-        int32_t ret = Rwabs((0<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), sect, 1, 0, i + 2 + bus_offset);
+        int32_t ret = Rwabs((0<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), physsect.sect, 1, 0, i + 2 + bus_offset);
         if (ret == 0) {
-            printf("success.\r\n");
-        } else {
-            printf("failed.\r\n");
+            printf("Root sector of disk %d read successfully.\r\n", i);
+
+            if (physsect.mbr.bootsig == 0x55aa)
+            {
+                // DOS MBR
+                for (int j = 0; j < 4; ++j) {
+                    PARTENTRY* pe = &physsect.mbr.entry[j];
+                    if (pe->type != 0x00) {
+                        swpl(pe->start);
+                        swpl(pe->size);
+                        printf("Partition[%02x] %d (%d.%d MiB):\r\n", pe->type, j, MAXPHYSSECTSIZE * pe->size / (1024 * 1024), MAXPHYSSECTSIZE * pe->size % (1024 * 1024) / 10000);
+                        printf("Start: %08x, end: %08x\r\n", pe->start, pe->start + pe->size - 1);
+                    }
+                }
+            } else {
+                // AHDI root sector
+                for (int j = 0; j < 4; ++j) {
+                    struct partition_info* pi = &physsect.rs.part[j];
+                    if (pi->flg & 0x01) {
+                        char str[4] = {};
+                        memcpy(str, pi->id, 3);
+                        printf("Partition[%s] %d (%d.%d MiB):\r\n", str, j, MAXPHYSSECTSIZE * pi->siz / (1024 * 1024), MAXPHYSSECTSIZE * pi->siz % (1024 * 1024) / 10000);
+                        printf("Start: %08x, end: %08x\r\n", pi->st, pi->st + pi->siz - 1);
+                    }
+                }
+            }
         }
     }
     printf("\r\n");
@@ -42,13 +67,16 @@ int main(int argc, const char* argv[])
     getchar();
 
     printf("Scanning ACSI disks...\r\n");
+    printf("\r\n");
     scan_disk(0);
 
-    //printf("Scanning SCSI disks...\r\n");
-    //scan_disk(8);
+    printf("Scanning SCSI disks...\r\n");
+    printf("\r\n");
+    scan_disk(8);
 
-    //printf("Scanning IDE disks...\r\n");
-    //scan_disk(16);
+    printf("Scanning IDE disks...\r\n");
+    printf("\r\n");
+    scan_disk(16);
 
     getchar();
 

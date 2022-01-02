@@ -1,4 +1,4 @@
-TARGET = at_disk.ttp
+TARGET = at_disk.tos
 
 CROSS = yes
 
@@ -21,7 +21,7 @@ LDFLAGS = -L$(LIBCMINI_LIB) -lcmini -lgcc
 
 default: $(TARGET)
 
-$(TARGET): at_disk.c
+$(TARGET): at_disk.c disk_struct.h byte_swap.h
 	$(CC) -s -nostdlib $(LIBCMINI_STARTUP)/crt0.o $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 .PHONY: clean
