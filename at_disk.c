@@ -9,6 +9,8 @@
 
 #define VERSION "0.1"
 
+#define GIGABYTE (1024*1024*1024UL)
+
 static PHYSSECT physsect;
 
 static void scan_disk(int bus_offset)
@@ -17,15 +19,18 @@ static void scan_disk(int bus_offset)
         int32_t ret = Rwabs((0<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), physsect.sect, 1, 0, i + 2 + bus_offset);
         if (ret == 0) {
             printf("Root sector of disk %d read successfully.\r\n", i);
+            printf("Checking partitions within first GiB.\r\n");
+            printf("\r\n");
 
             if (physsect.mbr.bootsig == 0x55aa)
             {
                 // DOS MBR
                 for (int j = 0; j < 4; ++j) {
                     PARTENTRY* pe = &physsect.mbr.entry[j];
-                    if (pe->type != 0x00) {
-                        swpl(pe->start);
-                        swpl(pe->size);
+                    swpl(pe->start);
+                    swpl(pe->size);
+                    // TODO: extended partition types (0x05 = CHS, 0x0f = LBA)
+                    if (pe->type != 0x00 && (pe->type == 0x04 || pe->type == 0x06) && pe->start * MAXPHYSSECTSIZE < GIGABYTE) {
                         printf("Partition[%02x] %d (%d.%d MiB):\r\n", pe->type, j, MAXPHYSSECTSIZE * pe->size / (1024 * 1024), MAXPHYSSECTSIZE * pe->size % (1024 * 1024) / 10000);
                         printf("Start: %08x, end: %08x\r\n", pe->start, pe->start + pe->size - 1);
                     }
@@ -34,9 +39,10 @@ static void scan_disk(int bus_offset)
                 // AHDI root sector
                 for (int j = 0; j < 4; ++j) {
                     struct partition_info* pi = &physsect.rs.part[j];
-                    if (pi->flg & 0x01) {
-                        char str[4] = {};
-                        memcpy(str, pi->id, 3);
+                    char str[4] = {};
+                    memcpy(str, pi->id, 3);
+                    // TODO: XGM
+                    if ((pi->flg & 0x01) && (strcmp(str, "GEM") == 0 || strcmp(str, "BGM") == 0) && pi->st * MAXPHYSSECTSIZE < GIGABYTE) {
                         printf("Partition[%s] %d (%d.%d MiB):\r\n", str, j, MAXPHYSSECTSIZE * pi->siz / (1024 * 1024), MAXPHYSSECTSIZE * pi->siz % (1024 * 1024) / 10000);
                         printf("Start: %08x, end: %08x\r\n", pi->st, pi->st + pi->siz - 1);
                     }
