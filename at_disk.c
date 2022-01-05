@@ -221,34 +221,41 @@ static void read_partition_table(void)
 
 static void print_summary(void)
 {
-#if 0
-    printf("Drive Bus  Unit Type Size Sector\r\n");
-    printf("--------------------------------\r\n");
+    printf("Drv Bus  # Type Size   Sectors\r\n");
+    printf("--------------------------------------\r\n");
 
-    beyond_gib = p->pstart[i] * MAXPHYSSECTSIZE >= GIGABYTE;
-            printf("%c:    %s", drives[i].drive, drives[i].bus_str);
+    int skipped = 0;
+
+    for (int i = 2; i < DRIVES_MAX; ++i) {
+        if (isalpha(drives[i].drive)) {
+            printf("%c:  %s", drives[i].drive, drives[i].bus_str);
             if (strlen(drives[i].bus_str) == 3)
                 printf(" ");
-            printf(" %d    %ld%s\r\n", flags & 0x07, p->pstart[i], beyond_gib ? "*" : "");
 
-if (beyond_gib) {
-        printf("\r\n");
-        printf("* beyond first GiB, skipped\r\n");
-    }
-    printf("\r\n");
+            printf(" %d", drives[i].pun);
 
-    if ((pi->flg & 0x01) && (strcmp(str, "GEM") == 0 || strcmp(str, "BGM") == 0) && pi->st * MAXPHYSSECTSIZE < GIGABYTE) {
-            printf("Partition[%s] %d (%d.%d MiB):\r\n", str, i, MAXPHYSSECTSIZE * pi->siz / (1024 * 1024), MAXPHYSSECTSIZE * pi->siz % (1024 * 1024) / 10000);
-            printf("  Start: %08x, end: %08x\r\n", pi->st * MAXPHYSSECTSIZE, (pi->st + pi->siz) * MAXPHYSSECTSIZE - 1);
+            if (drives[i].size > 0) {
+                if (drives[i].type[0] == '\0' && drives[i].type[1] == 'D')
+                    printf(" %02x ", drives[i].type[2]);
+                else
+                    printf(" %s", drives[i].type);
 
-            if (read_sector(physsect2.sect, dev, pi->st + 1) == 0 && physsect2.mbr.bootsig == 0x55aa) {
-                printf("  Partition contains a MS-DOS image!\r\n");
+                printf("  %03ld.%ld", MAXPHYSSECTSIZE * drives[i].size / (1024 * 1024), MAXPHYSSECTSIZE * drives[i].size % (1024 * 1024) / 10000);
+                printf(" %07u-%07u", drives[i].sector_start, drives[i].sector_end-1);
+            } else {
+                // workaround for unsupported partition types
+                printf("             %u", drives[i].sector_start);
             }
+            printf("%s\r\n", drives[i].skipped ? "*" : "");
+            skipped |= drives[i].skipped;
+        }
+    }
 
-
-            printf("Partition[%02x] %d (%d.%d MiB):\r\n", pe->type, i, MAXPHYSSECTSIZE * pe->size / (1024 * 1024), MAXPHYSSECTSIZE * pe->size % (1024 * 1024) / 10000);
-            printf("  Start: %08x, end: %08x\r\n", pe->start * MAXPHYSSECTSIZE, (pe->start + pe->size) * MAXPHYSSECTSIZE - 1);
-#endif
+    if (skipped) {
+        printf("\r\n");
+        printf("* skipped due to 1 GiB limit / unused\r\n");
+        printf("  partition / unsupported type\r\n");
+    }
 }
 
 
@@ -263,7 +270,19 @@ int main(int argc, const char* argv[])
 
     read_partition_table();
 
+    printf("\r\n");
+
     print_summary();
+
+    printf("\r\n");
+
+#if 0
+            printf("  Start: %08x, end: %08x\r\n", pi->st * MAXPHYSSECTSIZE, (pi->st + pi->siz) * MAXPHYSSECTSIZE - 1);
+
+            if (read_sector(physsect2.sect, dev, pi->st + 1) == 0 && physsect2.mbr.bootsig == 0x55aa) {
+                printf("  Partition contains a MS-DOS image!\r\n");
+            }
+#endif
 
     getchar();
 
