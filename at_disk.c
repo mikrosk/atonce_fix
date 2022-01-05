@@ -1,4 +1,6 @@
+#include <ctype.h>
 #include <mint/osbind.h>
+#include <mint/sysvars.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,11 +9,42 @@
 #include "byte_swap.h"
 #include "disk_struct.h"
 
-#define VERSION "0.1"
+#define VERSION  "0.1"
 
-#define GIGABYTE (1024*1024*1024UL)
+#define DRIVES_MAX 16
+#define BUS_ACSI   0
+#define BUS_SCSI   8
+#define BUS_IDE    16
+#define GIGABYTE   (1024*1024*1024UL)
 
 static PHYSSECT physsect, physsect2;
+
+static void print_help(void)
+{
+    fprintf(stderr, "Usage: %s [-h] <drv letter>...\r\n\r\n", APP_NAME);
+    fprintf(stderr, "<drv letter> is one of X / X: / X:\\\r\n\r\n");
+    fprintf(stderr,
+    "Purpose of this program is to correct\r\n"
+    "invalid disk image parameters created\r\n"
+    "by MS-DOS in ATonce PC emulator. If you\r\n"
+    "don't have this hardware installed or\r\n"
+    "or you don't have any dedicated\r\n"
+    "partitions for MS-DOS, you don't need\r\n"
+    "it.\r\n");
+    fprintf(stderr, "\r\n");
+    fprintf(stderr, "Press Return to exit.\r\n");
+    getchar();
+
+}
+
+static HDINFO* get_pun_ptr(void)
+{
+  int32_t oldstack = Super(0L);
+  HDINFO* p = *pun_ptr;
+  Super ((void *)oldstack);
+
+  return p;
+}
 
 static int32_t read_sector(uint8_t* buffer, uint16_t dev, uint32_t sector)
 {
@@ -50,59 +83,116 @@ static void analyze_ahdi(struct rootsector* rs, uint16_t dev)
     }
 }
 
-static void scan_disk(int bus_offset)
-{
-    for (int i = 0; i < 8; ++i) {
-        uint16_t dev = i + 2 + bus_offset;
-
-        int32_t ret = read_sector(physsect.sect, dev, 0);
-        if (ret == 0) {
-            printf("Root sector of disk %d read successfully.\r\n", i);
-            printf("Checking partitions within first GiB.\r\n");
-            printf("\r\n");
-
-            if (physsect.mbr.bootsig == 0x55aa) {
-                // DOS MBR
-                analyze_mbr(&physsect.mbr, dev);
-            } else {
-                // AHDI root sector
-                analyze_ahdi(&physsect.rs, dev);
-            }
-        }
-    }
-    printf("\r\n");
-}
-
 int main(int argc, const char* argv[])
 {
     printf("ATonce MS-DOS partition fixer v%s\r\n", VERSION);
     printf("\r\n");
 
-    printf(
-"Purpose of this program is to correct\r\n"
-"invalid disk image parameters created\r\n"
-"by MS-DOS in ATonce PC emulator. If you\r\n"
-"don't have this hardware installed or\r\n"
-"or you don't have any dedicated\r\n"
-"partitions for MS-DOS, you don't need\r\n"
-"it.\r\n");
+    struct {
+        int bus;
+        char bus_str[4+1];
+        int pun;
+        char drive;
+        uint32_t sector;
+    } drives[DRIVES_MAX] = {};
+
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-h") == 0) {
+            print_help();
+            return EXIT_SUCCESS;
+        } else {
+            switch (strlen(argv[i])) {
+                case 3:
+                    if (argv[i][2] != '\\') {
+                        print_help();
+                        return EXIT_FAILURE;
+                    }
+                case 2:
+                    if (argv[i][1] != ':') {
+                        print_help();
+                        return EXIT_FAILURE;
+                    }
+                case 1:
+                    if (isalpha(argv[i][0])) {
+                        char c = toupper(argv[i][0]);
+                        if (c < 'C' || c > 'P')
+                            fprintf(stderr, "Ignoring'%c:' drive\r\n", c);
+                        else if (drives[c - 'A'].drive == c) {
+                            fprintf(stderr, "Ignoring multiple '%c:' drives\r\n", c);
+                        } else {
+                            drives[c - 'A'].drive = c;
+                        }
+                        break;
+                    }
+
+                default:
+                    print_help();
+                    return EXIT_FAILURE;
+            }
+        }
+    }
+
     printf("\r\n");
 
-    printf("Press ENTER to continue/CTRL+C to exit.\r\n");
-    printf("\r\n");
-    getchar();
+    printf("Drive Bus  Unit Sector\r\n");
+    printf("----------------------\r\n");
 
-    printf("Scanning ACSI disks...\r\n");
-    printf("\r\n");
-    scan_disk(0);
+    int beyond_gib = 0;
+    HDINFO* p = get_pun_ptr();
+    for (int i = 2; i < DRIVES_MAX; ++i) {
+        uint8_t flags = p->v_p_un[i];
+        if (!(flags & (1<<7)) && isalpha(drives[i].drive)) {
+            if (flags & (1<<4)) {
+                strcpy(drives[i].bus_str, "IDE");
+                drives[i].bus = BUS_IDE;
+            } else if (flags & (1<<3)) {
+                strcpy(drives[i].bus_str, "SCSI");
+                drives[i].bus = BUS_SCSI;
+            } else {
+                strcpy(drives[i].bus_str, "ACSI");
+                drives[i].bus = BUS_ACSI;
+            }
 
-    printf("Scanning SCSI disks...\r\n");
-    printf("\r\n");
-    scan_disk(8);
+            beyond_gib = p->pstart[i] * MAXPHYSSECTSIZE >= GIGABYTE;
+            printf("%c:    %s", drives[i].drive, drives[i].bus_str);
+            if (strlen(drives[i].bus_str) == 3)
+                printf(" ");
+            printf(" %d    %ld%s\r\n", flags & 0x07, p->pstart[i], beyond_gib ? "*" : "");
+            drives[i].pun = (flags & 0x07);
+            drives[i].sector = p->pstart[i];
+        }
+    }
 
-    printf("Scanning IDE disks...\r\n");
+    if (beyond_gib) {
+        printf("\r\n");
+        printf("* beyond first GiB, skipped\r\n");
+    }
     printf("\r\n");
-    scan_disk(16);
+
+    // we can't assume any order (IDE->SCSI->ACSI or ACSI#0->ACSI#1...)
+    int current_bus = -1;
+    int current_pun = -1;
+    for (int i = 2; i < DRIVES_MAX; ++i) {
+        if (isalpha(drives[i].drive)) {
+            if (drives[i].bus != current_bus || drives[i].pun != current_pun) {
+                int dev = 2 + drives[i].bus + drives[i].pun;
+                if (read_sector(physsect.sect, dev, 0) == 0) {
+                    if (physsect.mbr.bootsig == 0x55aa) {
+                        // DOS MBR
+                        printf("DOS MBR of %s#%d OK.\r\n", drives[i].bus_str, drives[i].pun);
+                        analyze_mbr(&physsect.mbr, dev);
+                    } else {
+                        // AHDI root sector
+                        printf("AHDI root sector of %s#%d OK.\r\n", drives[i].bus_str, drives[i].pun);
+                        analyze_ahdi(&physsect.rs, dev);
+                    }
+
+                    current_bus = drives[i].bus;
+                    current_pun = drives[i].pun;
+                }
+            }
+        }
+    }
 
     getchar();
 

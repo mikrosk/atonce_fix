@@ -1,4 +1,4 @@
-TARGET = at_disk.tos
+TARGET = atn_fix.ttp
 
 CROSS = yes
 
@@ -16,7 +16,7 @@ LIBCMINI_LIB     = $(PREFIX)/lib/libcmini
 LIBCMINI_STARTUP = $(LIBCMINI_LIB)
 
 CC      = $(CROSSPREFIX)gcc
-CFLAGS  = -O2 -fomit-frame-pointer -I$(LIBCMINI_INCLUDE) -Wall
+CFLAGS  = -O2 -fomit-frame-pointer -I$(LIBCMINI_INCLUDE) -Wall -DAPP_NAME=\"$(TARGET)\"
 LDFLAGS = -L$(LIBCMINI_LIB) -lcmini -lgcc
 
 default: $(TARGET)
