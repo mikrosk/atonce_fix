@@ -9,7 +9,7 @@
 #include "byte_swap.h"
 #include "disk_struct.h"
 
-#define VERSION  "0.1"
+#define VERSION  "1.0 beta"
 
 #define DRIVES_MAX 16
 #define BUS_ACSI   0
@@ -31,6 +31,7 @@ static struct {
 
 static PHYSSECT physsect, physsect2;
 
+static int num_warnings;
 
 static int32_t read_sector(uint8_t* buffer, uint16_t dev, uint32_t sector)
 {
@@ -75,10 +76,13 @@ static void parse_args(int argc, const char* argv[])
                 case 1:
                     if (isalpha(argv[i][0])) {
                         char c = toupper(argv[i][0]);
-                        if (c < 'C' || c > 'P')
+                        if (c < 'C' || c > 'P') {
                             fprintf(stderr, "Skipping '%c:' drive (C: - P:)\r\n", c);
+                            num_warnings++;
+                        }
                         else if (drives[c - 'A'].drive == c) {
                             fprintf(stderr, "Ignoring multiple '%c:' drives\r\n", c);
+                            num_warnings++;
                         } else {
                             drives[c - 'A'].drive = c;
                         }
@@ -110,6 +114,7 @@ static void read_pun_info(void)
 
             if (flags & (1<<7)) {
                 fprintf(stderr, "Skipping '%c:' drive (not managed)\r\n", drives[i].drive);
+                num_warnings++;
                 drives[i].drive = '\0';
                 continue;
             }
@@ -166,6 +171,7 @@ static int analyze_mbr(const MBR* mbr, uint32_t prim_start, uint32_t ext_start, 
     // sanity check
     if (mbr->bootsig != 0x55aa) {
         fprintf(stderr, "Skipping '%c:' drive (not a valid MBR)\r\n", drives[drive].drive);
+        num_warnings++;
         drives[drive].drive = '\0';
         return -1;
     }
@@ -204,6 +210,7 @@ static int analyze_mbr(const MBR* mbr, uint32_t prim_start, uint32_t ext_start, 
 
     if (!found && ext_start == 0) {
         fprintf(stderr, "Skipping '%c:' drive (not in partition table)\r\n", drives[drive].drive);
+        num_warnings++;
         drives[drive].drive = '\0';
     }
 
@@ -227,7 +234,7 @@ static int analyze_ahdi_partition(const struct partition_info* pi, uint16_t dev,
     return 1;
 }
 
-static void analyze_ahdi(const struct rootsector* rs, uint16_t dev, int drive)
+static int analyze_ahdi(const struct rootsector* rs, uint16_t dev, int drive)
 {
     int found = 0;
     drives[drive].skipped = 1;  // skipped by default
@@ -263,12 +270,17 @@ static void analyze_ahdi(const struct rootsector* rs, uint16_t dev, int drive)
 
     if (!found) {
         fprintf(stderr, "Skipping '%c:' drive (not in part. table)\r\n", drives[drive].drive);
+        num_warnings++;
         drives[drive].drive = '\0';
     }
+
+    return found;
 }
 
-static void read_partition_table(void)
+static int read_partition_table(void)
 {
+    int found = 0;
+
     // we can't assume any order (IDE->SCSI->ACSI or ACSI#0->ACSI#1...)
     int current_bus = -1;
     int current_pun = -1;
@@ -282,17 +294,20 @@ static void read_partition_table(void)
                     current_pun = drives[i].pun;
                 } else {
                     fprintf(stderr, "Skipping '%c:' drive (root sector failure)\r\n", drives[i].drive);
+                    num_warnings++;
                     drives[i].drive = '\0';
                     continue;
                 }
             }
 
             if (physsect.mbr.bootsig == 0x55aa)
-                analyze_mbr(&physsect.mbr, 0, 0, dev, i);
+                found |= (analyze_mbr(&physsect.mbr, 0, 0, dev, i) == 1);
             else
-                analyze_ahdi(&physsect.rs, dev, i);
+                found |= (analyze_ahdi(&physsect.rs, dev, i) == 1);
         }
     }
+
+    return found;
 }
 
 
@@ -345,21 +360,35 @@ int main(int argc, const char* argv[])
 
     read_pun_info();
 
-    read_partition_table();
+    if (!read_partition_table()) {
+        printf("\r\n");
+        fprintf(stderr, "Press Return to exit.\r\n");
+        getchar();
+        exit(EXIT_FAILURE);
+    }
 
-    printf("\r\n");
+    if (num_warnings > 0)
+        printf("\r\n");
 
     print_summary();
 
     printf("\r\n");
 
-#if 0
-            printf("  Start: %08x, end: %08x\r\n", pi->st * MAXPHYSSECTSIZE, (pi->st + pi->siz) * MAXPHYSSECTSIZE - 1);
+    for (int i = 2; i < DRIVES_MAX; ++i) {
+        if (isalpha(drives[i].drive) && !drives[i].skipped) {
+            int dev = 2 + drives[i].bus + drives[i].pun;
 
-            if (read_sector(physsect2.sect, dev, pi->st + 1) == 0 && physsect2.mbr.bootsig == 0x55aa) {
-                printf("  Partition contains a MS-DOS image!\r\n");
+            if (read_sector(physsect.sect, dev, drives[i].sector_start + 1) != 0) {
+                fprintf(stderr, "Skipping '%c:' drive (root sector failure)\r\n", drives[i].drive);
+                drives[i].drive = '\0';
+                continue;
             }
-#endif
+
+            if (physsect.mbr.bootsig == 0x55aa) {
+                printf("Drive %c: contains a MS-DOS image!\r\n", drives[i].drive);
+            }
+        }
+    }
 
     getchar();
 
