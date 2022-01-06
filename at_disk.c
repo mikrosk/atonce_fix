@@ -58,6 +58,9 @@ static void print_help(int exit_code)
 
 static void parse_args(int argc, const char* argv[])
 {
+    if (argc < 2)
+        print_help(EXIT_FAILURE);
+
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-h") == 0) {
             print_help(EXIT_SUCCESS);
@@ -127,50 +130,98 @@ static void read_pun_info(void)
     }
 }
 
+static int analyze_dos_partition(const PARTENTRY* pe, uint32_t pe_start, uint32_t pe_size, uint16_t dev, int drive)
+{
+    if (pe->type == 0x05 ||  pe->type == 0x0f || drives[drive].sector_start != pe_start)
+        return 0;
 
-static void analyze_mbr(MBR* mbr, uint16_t dev, int drive)
+    drives[drive].type[0] = '\0';
+    drives[drive].type[1] = 'D';
+    drives[drive].type[2] = pe->type;
+    drives[drive].sector_end = pe_start + pe_size - 1;
+    drives[drive].size = pe_size;
+
+    if (pe->type != 0x00
+        // 0x01: FAT12 as primary partition in first physical 32 MB of disk
+        //       or as logical drive anywhere on disk (else use 06h instead).
+        // 0x04: FAT16 with less than 65536 sectors (32 MB). As primary partition it must reside in first physical 32 MB of disk
+        //       or as logical drive anywhere on disk (else use 06h instead).
+        // 0x06: FAT16B with 65536 or more sectors. It must reside within the first 8 GB of disk
+        //       unless used for logical drives in an 0Fh extended partition (else use 0Eh instead).
+        //       Also used for FAT12 and FAT16 volumes in primary partitions if they are not residing in first physical 32 MB of disk.
+        // 0x0e: FAT16B with LBA.
+        && (pe->type == 0x01 || pe->type == 0x04 || pe->type == 0x06 || pe->type == 0x0e)
+        && pe_size != 0 && pe_start * MAXPHYSSECTSIZE < GIGABYTE) {
+        drives[drive].skipped = 0;
+    }
+
+    return 1;
+}
+
+static int analyze_mbr(const MBR* mbr, uint32_t prim_start, uint32_t ext_start, uint16_t dev, int drive)
 {
     int found = 0;
     drives[drive].skipped = 1;  // skipped by default
 
-    for (int i = 0; i < 4; ++i) {
-        PARTENTRY* pe = &mbr->entry[i];
-        swpl(pe->start);
-        swpl(pe->size);
-        if (drives[drive].sector_start == pe->start) {
-            found = 1;
+    // sanity check
+    if (mbr->bootsig != 0x55aa) {
+        fprintf(stderr, "Skipping '%c:' drive (not a valid MBR)\r\n", drives[drive].drive);
+        drives[drive].drive = '\0';
+        return -1;
+    }
 
-            drives[drive].type[0] = '\0';
-            drives[drive].type[1] = 'D';
-            drives[drive].type[2] = pe->type;
-            drives[drive].sector_end = pe->start + pe->size - 1;
-            drives[drive].size = pe->size;
-            // TODO: extended partition types (0x05 = CHS, 0x0f = LBA)
-            if (pe->type != 0x00
-                && (pe->type == 0x04 || pe->type == 0x06)
-                && pe->start * MAXPHYSSECTSIZE < GIGABYTE) {
-                drives[drive].skipped = 0;
+    for (int i = 0; i < 4 && !found; ++i) {
+        const PARTENTRY* pe = &mbr->entry[i];
+        uint32_t pe_start = pe->start;
+        swpl(pe_start);
+        uint32_t pe_size = pe->size;
+        swpl(pe_size);
+
+        if (analyze_dos_partition(pe, prim_start + pe_start, pe_size, dev, drive)) {
+            found = 1;
+            break;
+        }
+
+        // 0x05: Extended partition with CHS addressing. It must reside within the first physical 8 GB of disk,
+        //       else use 0Fh instead
+        // 0x0f: Extended partition with LBA.
+        if (pe->type == 0x05 ||  pe->type == 0x0f) {
+            if (ext_start == 0)
+                ext_start = pe_start;
+            else
+                pe_start += ext_start;
+
+            if (read_sector(physsect2.sect, dev, pe_start) != 0)
                 break;
-            }
+
+            found = analyze_mbr(&physsect2.mbr, pe_start, ext_start, dev, drive);
+            if (found == -1)
+                return found;
+            else if (found)
+                break;
         }
     }
 
-    if (!found) {
+    if (!found && ext_start == 0) {
         fprintf(stderr, "Skipping '%c:' drive (not in partition table)\r\n", drives[drive].drive);
         drives[drive].drive = '\0';
     }
+
+    return found;
 }
 
 static int analyze_ahdi_partition(const struct partition_info* pi, uint16_t dev, int drive)
 {
-    if (drives[drive].sector_start != pi->st)
+    if (memcmp(pi->id, "XGM", 3) == 0 || drives[drive].sector_start != pi->st)
         return 0;
 
     memcpy(drives[drive].type, pi->id, 3);
     drives[drive].sector_end = pi->st + pi->siz - 1;
     drives[drive].size = pi->siz;
 
-    if ((pi->flg & 0x01) && pi->st * MAXPHYSSECTSIZE < GIGABYTE)
+    if ((pi->flg & 0x01)
+        && (memcmp(pi->id, "GEM", 3) == 0 || memcmp(pi->id, "BGM", 3) == 0)
+        && pi->siz != 0 && pi->st * MAXPHYSSECTSIZE < GIGABYTE)
         drives[drive].skipped = 0;
 
     return 1;
@@ -237,7 +288,7 @@ static void read_partition_table(void)
             }
 
             if (physsect.mbr.bootsig == 0x55aa)
-                analyze_mbr(&physsect.mbr, dev, i);
+                analyze_mbr(&physsect.mbr, 0, 0, dev, i);
             else
                 analyze_ahdi(&physsect.rs, dev, i);
         }

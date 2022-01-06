@@ -1,6 +1,8 @@
 #ifndef DISK_STRUCT_H_
 #define DISK_STRUCT_H_
 
+// EmuTOS structures
+
 #include <stdint.h>
 
 typedef uint8_t UBYTE;
