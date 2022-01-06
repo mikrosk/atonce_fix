@@ -73,7 +73,7 @@ static void parse_args(int argc, const char* argv[])
                     if (isalpha(argv[i][0])) {
                         char c = toupper(argv[i][0]);
                         if (c < 'C' || c > 'P')
-                            fprintf(stderr, "Skipping'%c:' drive (C: - P:)\r\n", c);
+                            fprintf(stderr, "Skipping '%c:' drive (C: - P:)\r\n", c);
                         else if (drives[c - 'A'].drive == c) {
                             fprintf(stderr, "Ignoring multiple '%c:' drives\r\n", c);
                         } else {
@@ -106,7 +106,7 @@ static void read_pun_info(void)
             uint8_t flags = p->v_p_un[i];
 
             if (flags & (1<<7)) {
-                fprintf(stderr, "Skipping'%c:' drive (not managed)\r\n", drives[i].drive);
+                fprintf(stderr, "Skipping '%c:' drive (not managed)\r\n", drives[i].drive);
                 drives[i].drive = '\0';
                 continue;
             }
@@ -156,36 +156,62 @@ static void analyze_mbr(MBR* mbr, uint16_t dev, int drive)
     }
 
     if (!found) {
-        fprintf(stderr, "Skipping'%c:' drive (not in partition table)\r\n", drives[drive].drive);
+        fprintf(stderr, "Skipping '%c:' drive (not in partition table)\r\n", drives[drive].drive);
         drives[drive].drive = '\0';
     }
 }
 
-static void analyze_ahdi(struct rootsector* rs, uint16_t dev, int drive)
+static int analyze_ahdi_partition(const struct partition_info* pi, uint16_t dev, int drive)
+{
+    if (drives[drive].sector_start != pi->st)
+        return 0;
+
+    memcpy(drives[drive].type, pi->id, 3);
+    drives[drive].sector_end = pi->st + pi->siz - 1;
+    drives[drive].size = pi->siz;
+
+    if ((pi->flg & 0x01) && pi->st * MAXPHYSSECTSIZE < GIGABYTE)
+        drives[drive].skipped = 0;
+
+    return 1;
+}
+
+static void analyze_ahdi(const struct rootsector* rs, uint16_t dev, int drive)
 {
     int found = 0;
     drives[drive].skipped = 1;  // skipped by default
 
-    for (int i = 0; i < 4; ++i) {
-        found = 1;
+    for (int i = 0; i < 4 && !found; ++i) {
+        const struct partition_info* pi = &rs->part[i];
 
-        struct partition_info* pi = &physsect.rs.part[i];
-        if (drives[drive].sector_start == pi->st) {
-            memcpy(drives[drive].type, pi->id, 3);
-            drives[drive].sector_end = pi->st + pi->siz - 1;
-            drives[drive].size = pi->siz;
-            // TODO: XGM
-            if ((pi->flg & 0x01)
-                && (strcmp(drives[drive].type, "GEM") == 0 || strcmp(drives[drive].type, "BGM") == 0)
-                && pi->st * MAXPHYSSECTSIZE < GIGABYTE) {
-                drives[drive].skipped = 0;
+        if (analyze_ahdi_partition(pi, dev, drive)) {
+            found = 1;
+            break;
+        }
+
+        uint32_t pi_st;
+        uint32_t ext_st;
+        pi_st = ext_st = pi->st;
+
+        while ((pi->flg & 0x01) && memcmp(pi->id, "XGM", 3) == 0) {
+            if (read_sector(physsect2.sect, dev, pi_st) != 0)
+                break;
+
+            struct partition_info* ext_pi = &physsect2.rs.part[0];
+            ext_pi->st += pi_st;
+
+            if (analyze_ahdi_partition(ext_pi, dev, drive)) {
+                found = 1;
                 break;
             }
+
+            pi = &physsect2.rs.part[1];
+            pi_st = ext_st + pi->st;
         }
     }
 
     if (!found) {
-        fprintf(stderr, "Skipping'%c:' drive (not in partition table)\r\n", drives[drive].drive);
+        fprintf(stderr, "Skipping '%c:' drive (not in part. table)\r\n", drives[drive].drive);
         drives[drive].drive = '\0';
     }
 }
@@ -204,7 +230,7 @@ static void read_partition_table(void)
                     current_bus = drives[i].bus;
                     current_pun = drives[i].pun;
                 } else {
-                    fprintf(stderr, "Skipping'%c:' drive (root sector failure)\r\n", drives[i].drive);
+                    fprintf(stderr, "Skipping '%c:' drive (root sector failure)\r\n", drives[i].drive);
                     drives[i].drive = '\0';
                     continue;
                 }
