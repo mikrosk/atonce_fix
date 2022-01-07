@@ -351,6 +351,105 @@ static void print_summary(void)
 }
 
 
+static void fix_image_mbr(const MBR* mbr, uint32_t offset, uint32_t prim_start, uint32_t ext_start, uint16_t dev, int drive)
+{
+    // sanity check
+    if (mbr->bootsig != 0x55aa) {
+        fprintf(stderr, "Skipping drive (not a valid MBR)\r\n");
+        return;
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        const PARTENTRY* pe = &mbr->entry[i];
+        uint32_t pe_start = pe->start;
+        swpl(pe_start);
+        uint32_t pe_size = pe->size;
+        swpl(pe_size);
+
+        if (pe_size > 0) {
+            if (read_sector(physsect2.sect, dev, pe_start + offset) != 0) {
+                continue;
+            }
+
+            struct fat16_bs* fat16 = (struct fat16_bs*)physsect2.sect;
+
+            uint16_t bps = *(uint16_t*)fat16->bps;
+            swpw(bps);  /* bytes per sector */
+            uint32_t sec = *(uint16_t*)fat16->sec ? *(uint16_t*)fat16->sec : *(uint32_t*)fat16->sec2;
+            swpl(sec);  /* total number of sectors */
+            char str[8+1] = {};
+            memcpy(str, fat16->fstype, sizeof(fat16->fstype));
+
+            printf("[%s] %02x   %03u.%02u %07u-%07u\r\n", str, pe->type,
+                   MAXPHYSSECTSIZE * pe_size / (1024 * 1024), MAXPHYSSECTSIZE * pe_size % (1024 * 1024) / 10000,
+                   pe_start + offset, pe_start + pe_size + offset - 1);
+
+            if (MAXPHYSSECTSIZE * pe_size < bps * sec) {
+                memcpy(str, physsect2.sect+3, 8);
+                str[8] = '\0';
+                fprintf(stderr, "->Skipping \"%s\" (FAT16>MBR's PTE)\r\n", str);
+                continue;
+            }
+
+            int32_t additional_phys_sectors = (pe_start + pe_size + offset) - (drives[drive].sector_start + drives[drive].size);
+            if (additional_phys_sectors <= 0) {
+                fprintf(stderr, "->Skipping (volume within limits)\r\n");
+                continue;
+            }
+
+            uint32_t additional_bytes = additional_phys_sectors * MAXPHYSSECTSIZE;
+            printf("->%u sectors (%u bytes) more!\r\n", additional_phys_sectors, additional_bytes);
+
+            uint16_t res = *(uint16_t*)fat16->res;
+            swpw(res);  /* number of reserved sectors */
+            uint8_t fat = fat16->fat;   /* number of FATs */
+            uint16_t dir = *(uint16_t*)fat16->dir;
+            swpw(dir);  /* number of DIR root entries */
+            uint16_t spf = *(uint16_t*)fat16->spf;
+            swpw(spf);  /* sectors per FAT */
+
+            uint32_t additional_log_sectors = additional_bytes / bps;
+            if (additional_bytes % bps != 0)
+                additional_log_sectors++;
+
+            if (sec - additional_log_sectors < res + fat*spf + (dir*32/bps)) {
+                fprintf(stderr, "->Skipping (can't shrink system sectors)\r\n");
+                continue;
+            }
+
+            // TODO: check for used sectors (from FAT), too
+            uint32_t new_pe_size = pe_size - additional_phys_sectors;
+            uint32_t     new_sec = sec     - additional_log_sectors;
+            printf("\r\n");
+
+            printf("Shrink PTE[%d] by %d phys. sectors? ", i, pe_size - new_pe_size);
+            char shrink_pe_size = 'n';
+            scanf("%c", &shrink_pe_size);
+            printf("\r\n");
+            shrink_pe_size = toupper(shrink_pe_size);
+
+            printf("Shrink volume by %d log. sectors? ", sec - new_sec);
+            char shrink_sec = 'n';
+            scanf("%c", &shrink_sec);
+            printf("\r\n");
+            shrink_sec = toupper(shrink_sec);
+        }
+
+        if (pe->type == 0x05 ||  pe->type == 0x0f) {
+            if (ext_start == 0)
+                ext_start = pe_start;
+            else
+                pe_start += ext_start;
+
+            if (read_sector(physsect2.sect, dev, pe_start + offset) != 0)
+                break;
+
+            fix_image_mbr(&physsect2.mbr, offset, pe_start, ext_start, dev, drive);
+        }
+    }
+}
+
+
 int main(int argc, const char* argv[])
 {
     printf("ATonce MS-DOS partition fixer v%s\r\n", VERSION);
@@ -386,10 +485,16 @@ int main(int argc, const char* argv[])
 
             if (physsect.mbr.bootsig == 0x55aa) {
                 printf("Drive %c: contains a MS-DOS image!\r\n", drives[i].drive);
+                printf("\r\n");
+                fix_image_mbr(&physsect.mbr, drives[i].sector_start + 1, 0, 0, dev, i);
             }
         }
     }
 
+    printf("\r\n");
+    printf("Done.\r\n");
+    printf("\r\n");
+    printf("Press Return to exit.\r\n");
     getchar();
 
     return EXIT_SUCCESS;
