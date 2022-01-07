@@ -332,8 +332,8 @@ static void print_summary(void)
                 else
                     printf(" %s", drives[i].type);
 
-                printf("  %03ld.%ld", MAXPHYSSECTSIZE * drives[i].size / (1024 * 1024), MAXPHYSSECTSIZE * drives[i].size % (1024 * 1024) / 10000);
-                printf(" %07u-%07u", drives[i].sector_start, drives[i].sector_end-1);
+                printf("  %03lu.%02lu", MAXPHYSSECTSIZE * drives[i].size / (1024 * 1024), MAXPHYSSECTSIZE * drives[i].size % (1024 * 1024) / 10000);
+                printf(" %07u-%07u", drives[i].sector_start, drives[i].sector_end);
             } else {
                 // workaround for unsupported partition types
                 printf("             %u", drives[i].sector_start);
