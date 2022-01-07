@@ -38,6 +38,11 @@ static int32_t read_sector(uint8_t* buffer, uint16_t dev, uint32_t sector)
     return Rwabs2((0<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), buffer, 1, sector, dev);
 }
 
+static int32_t write_sector(uint8_t* buffer, uint16_t dev, uint32_t sector)
+{
+    return Rwabs2((1<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), buffer, 1, sector, dev);
+}
+
 
 static void print_help(int exit_code)
 {
@@ -351,16 +356,16 @@ static void print_summary(void)
 }
 
 
-static void fix_image_mbr(const MBR* mbr, uint32_t offset, uint32_t prim_start, uint32_t ext_start, uint16_t dev, int drive)
+static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, uint32_t ext_start, uint16_t dev, int drive)
 {
     // sanity check
-    if (mbr->bootsig != 0x55aa) {
+    if (sect.mbr.bootsig != 0x55aa) {
         fprintf(stderr, "Skipping drive (not a valid MBR)\r\n");
         return;
     }
 
     for (int i = 0; i < 4; ++i) {
-        const PARTENTRY* pe = &mbr->entry[i];
+        PARTENTRY* pe = &sect.mbr.entry[i];
         uint32_t pe_start = pe->start;
         swpl(pe_start);
         uint32_t pe_size = pe->size;
@@ -388,6 +393,13 @@ static void fix_image_mbr(const MBR* mbr, uint32_t offset, uint32_t prim_start, 
                 memcpy(str, physsect2.sect+3, 8);
                 str[8] = '\0';
                 fprintf(stderr, "->Skipping \"%s\" (FAT16>MBR's PTE)\r\n", str);
+                continue;
+            }
+
+            if (pe_start + offset >= drives[drive].sector_start + drives[drive].size) {
+                memcpy(str, physsect2.sect+3, 8);
+                str[8] = '\0';
+                fprintf(stderr, "->Skipping \"%s\" (pe_start>end)\r\n", str);
                 continue;
             }
 
@@ -426,13 +438,41 @@ static void fix_image_mbr(const MBR* mbr, uint32_t offset, uint32_t prim_start, 
             char shrink_pe_size = 'n';
             scanf("%c", &shrink_pe_size);
             printf("\r\n");
-            shrink_pe_size = toupper(shrink_pe_size);
+            shrink_pe_size = tolower(shrink_pe_size);
 
             printf("Shrink volume by %d log. sectors? ", sec - new_sec);
             char shrink_sec = 'n';
             scanf("%c", &shrink_sec);
             printf("\r\n");
-            shrink_sec = toupper(shrink_sec);
+            shrink_sec = tolower(shrink_sec);
+
+            if (shrink_pe_size == 'y') {
+                // WARNING: pe_size can't be used from now on!
+                pe_size = new_pe_size;
+                swpl(pe_size);
+                pe->size = pe_size;
+
+                if (write_sector(sect.sect, dev, offset) == 0) {
+                    printf("MBR (sector %u) updated.\r\n", offset);
+                }
+            }
+
+            if (shrink_sec == 'y') {
+                // WARNING: sec can't be used from now on!
+                if (*(uint16_t*)fat16->sec) {
+                    uint16_t sec16 = (uint16_t)new_sec;
+                    swpw(sec16);
+                    memcpy(fat16->sec, &sec16, sizeof(fat16->sec));
+                } else {
+                    sec = new_sec;
+                    swpl(sec);
+                    memcpy(fat16->sec2, &sec, sizeof(fat16->sec2));
+                }
+
+                if (write_sector(physsect2.sect, dev, pe_start + offset) == 0) {
+                    printf("Volume (sector %u) updated.\r\n", pe_start + offset);
+                }
+            }
         }
 
         if (pe->type == 0x05 ||  pe->type == 0x0f) {
@@ -444,7 +484,7 @@ static void fix_image_mbr(const MBR* mbr, uint32_t offset, uint32_t prim_start, 
             if (read_sector(physsect2.sect, dev, pe_start + offset) != 0)
                 break;
 
-            fix_image_mbr(&physsect2.mbr, offset, pe_start, ext_start, dev, drive);
+            fix_image_mbr(physsect2, offset, pe_start, ext_start, dev, drive);
         }
     }
 }
@@ -486,7 +526,7 @@ int main(int argc, const char* argv[])
             if (physsect.mbr.bootsig == 0x55aa) {
                 printf("Drive %c: contains a MS-DOS image!\r\n", drives[i].drive);
                 printf("\r\n");
-                fix_image_mbr(&physsect.mbr, drives[i].sector_start + 1, 0, 0, dev, i);
+                fix_image_mbr(physsect, drives[i].sector_start + 1, 0, 0, dev, i);
             }
         }
     }
