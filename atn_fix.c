@@ -490,24 +490,21 @@ static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, u
                 continue;
             }
 
+            uint32_t additional_bytes = 0;
+
             int32_t additional_phys_sectors = (pe_start + pe_size + offset) - min((drives[drive].sector_start + drives[drive].size), GIB_SEC);
-            if (additional_phys_sectors <= 0) {
-                fprintf(stderr, "->Skipping (volume within limits)\r\n");
-                continue;
+            if (additional_phys_sectors > 0) {
+                additional_bytes = additional_phys_sectors * MAXPHYSSECTSIZE;
+                printf("->%u sectors (%u bytes) more!\r\n", additional_phys_sectors, additional_bytes);
+
+                if (shrink_pte(pe, i, additional_phys_sectors) && write_sector(sect.sect, dev, offset) == 0)
+                    printf("MBR (sector %u) updated.\r\n", offset);
             }
-
-            uint32_t additional_bytes = additional_phys_sectors * MAXPHYSSECTSIZE;
-            printf("->%u sectors (%u bytes) more!\r\n", additional_phys_sectors, additional_bytes);
-
-            if (shrink_pte(pe, i, additional_phys_sectors) && write_sector(sect.sect, dev, offset) == 0)
-                printf("MBR (sector %u) updated.\r\n", offset);
 
             if (arg_skip_fat_check) {
                 printf("\r\n");
                 continue;
             }
-
-            printf("\r\n");
 
             struct fat16_bs* fat16 = (struct fat16_bs*)physsect2.sect;
             uint16_t bps = *(uint16_t*)fat16->bps;
@@ -524,19 +521,20 @@ static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, u
 
             char str[8+1] = {};
             memcpy(str, physsect2.sect+3, 8);
-            printf("[%s]", str);
+            printf("%s/", str);
 
-            memcpy(str, fat16->fstype, sizeof(fat16->fstype));
-            uint32_t volume_size = sec * bps / MAXPHYSSECTSIZE; // in phys. sectors
+            memcpy(str, fat16->fstype, sizeof(fat16->fstype)-1);
+            str[7] = '\0';
+            uint32_t volume_size = sec * bps;
             get_mib(volume_size, &int_num, &frac_num);
-            printf("  %s   %03u.%02u %07u-%07u\r\n", str, int_num, frac_num,
-                pe_start + offset, pe_start + volume_size + offset - 1);
+            printf("%s%03u.%02u %07u-%07u\r\n", str, int_num, frac_num,
+                pe_start + offset, pe_start + (volume_size/MAXPHYSSECTSIZE) + offset - 1);
 
             uint32_t additional_log_sectors = additional_bytes / bps;
             if (additional_bytes % bps != 0)
                 additional_log_sectors++;
 
-            if (MAXPHYSSECTSIZE * pe_size < bps * sec) {
+            if (MAXPHYSSECTSIZE * pe_size < sec * bps) {
                 memcpy(str, physsect2.sect+3, 8);
                 str[8] = '\0';
                 fprintf(stderr, "->Skipping \"%s\" (FAT16>MBR's PTE)\r\n", str);
@@ -549,7 +547,9 @@ static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, u
                 continue;
             }
 
-            if (shrink_volume(fat16, additional_log_sectors) && write_sector(physsect2.sect, dev, pe_start + offset) == 0)
+            if (additional_log_sectors > 0
+                && shrink_volume(fat16, additional_log_sectors)
+                && write_sector(physsect2.sect, dev, pe_start + offset) == 0)
                 printf("Volume (sector %u) updated.\r\n", pe_start + offset);
 
             printf("\r\n");
@@ -605,8 +605,7 @@ int main(int argc, const char* argv[])
             }
 
             if (physsect.mbr.bootsig == 0x55aa) {
-                printf("Drive %c: contains a MS-DOS image!\r\n", drives[i].drive);
-                printf("\r\n");
+                printf("Drive %c: contains MS-DOS image:\r\n", drives[i].drive);
                 fix_image_mbr(physsect, drives[i].sector_start + 1, 0, 0, dev, i);
                 printf("\r\n");
             }

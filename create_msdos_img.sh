@@ -24,6 +24,7 @@ fdisk -l "$tmp_file" | grep FAT16 | while IFS=' ' read -r device start end secto
 do
 	# avoid losetup / mount with sudo
 	echo "Processing volume at sector ${start}..."
+	echo "Mount as: sudo mount -o loop,offset=$((($start_sector+1+$start)*512)) \"$disk_image\" /mnt"
 	volume=$(mktemp)
 	dd if="$tmp_file" of="$volume" bs=512 skip="$start" count="$sectors" 2> /dev/null
 	mkdosfs "$volume" > /dev/null
