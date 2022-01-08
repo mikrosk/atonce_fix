@@ -15,7 +15,14 @@
 #define BUS_ACSI   0
 #define BUS_SCSI   8
 #define BUS_IDE    16
-#define GIGABYTE   (1024*1024*1024UL)
+#define GIB_SEC    (1024*1024*1024UL/MAXPHYSSECTSIZE)
+
+#define min(a,b) \
+   ({ __typeof__ (a) _a = (a); \
+       __typeof__ (b) _b = (b); \
+     _a < _b ? _a : _b; })
+
+static int arg_skip_fat_check;
 
 static struct {
     int skipped;
@@ -48,10 +55,8 @@ static void print_help(int exit_code)
 {
     fprintf(stderr, "Usage: %s <option> <drv letter>...\r\n\r\n", APP_NAME);
     fprintf(stderr, "<option> is one of:\r\n");
-    fprintf(stderr, "  -f: format MS-DOS disk image\r\n");
     fprintf(stderr, "  -h: this help\r\n");
     fprintf(stderr, "  -s: skip FAT16 check\r\n");
-    fprintf(stderr, "  -z: zero drive(s)\r\n");
     fprintf(stderr, "<drv letter> is one: of X, X: or X:\\\r\n\r\n");
     fprintf(stderr,
         "This program helps with preparing and\r\n"
@@ -74,32 +79,37 @@ static void parse_args(int argc, const char* argv[])
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-h") == 0) {
             print_help(EXIT_SUCCESS);
-        } else {
-            switch (strlen(argv[i])) {
-                case 3:
-                    if (argv[i][2] != '\\')
-                        print_help(EXIT_FAILURE);
-                case 2:
-                    if (argv[i][1] != ':')
-                        print_help(EXIT_FAILURE);
-                case 1:
-                    if (isalpha(argv[i][0])) {
-                        char c = toupper(argv[i][0]);
-                        if (c < 'C' || c > 'P') {
-                            fprintf(stderr, "Skipping '%c:' drive (C: - P:)\r\n", c);
-                            num_warnings++;
-                        }
-                        else if (drives[c - 'A'].drive == c) {
-                            fprintf(stderr, "Ignoring multiple '%c:' drives\r\n", c);
-                            num_warnings++;
-                        } else {
-                            drives[c - 'A'].drive = c;
-                        }
-                        break;
-                    }
-                default:
+        }
+
+        if (strcmp(argv[i], "-s") == 0) {
+            arg_skip_fat_check = 1;
+            continue;
+        }
+
+        switch (strlen(argv[i])) {
+            case 3:
+                if (argv[i][2] != '\\')
                     print_help(EXIT_FAILURE);
-            }
+            case 2:
+                if (argv[i][1] != ':')
+                    print_help(EXIT_FAILURE);
+            case 1:
+                if (isalpha(argv[i][0])) {
+                    char c = toupper(argv[i][0]);
+                    if (c < 'C' || c > 'P') {
+                        fprintf(stderr, "Skipping '%c:' drive (C: - P:)\r\n", c);
+                        num_warnings++;
+                    }
+                    else if (drives[c - 'A'].drive == c) {
+                        fprintf(stderr, "Ignoring multiple '%c:' drives\r\n", c);
+                        num_warnings++;
+                    } else {
+                        drives[c - 'A'].drive = c;
+                    }
+                    break;
+                }
+            default:
+                print_help(EXIT_FAILURE);
         }
     }
 }
@@ -165,7 +175,7 @@ static int analyze_dos_partition(const PARTENTRY* pe, uint32_t pe_start, uint32_
         //       Also used for FAT12 and FAT16 volumes in primary partitions if they are not residing in first physical 32 MB of disk.
         // 0x0e: FAT16B with LBA.
         && (pe->type == 0x01 || pe->type == 0x04 || pe->type == 0x06 || pe->type == 0x0e)
-        && pe_size != 0 && pe_start * MAXPHYSSECTSIZE < GIGABYTE) {
+        && pe_size != 0) {
         drives[drive].skipped = 0;
     }
 
@@ -237,7 +247,7 @@ static int analyze_ahdi_partition(const struct partition_info* pi, uint16_t dev,
 
     if ((pi->flg & 0x01)
         && (memcmp(pi->id, "GEM", 3) == 0 || memcmp(pi->id, "BGM", 3) == 0)
-        && pi->siz != 0 && pi->st * MAXPHYSSECTSIZE < GIGABYTE)
+        && pi->siz != 0)
         drives[drive].skipped = 0;
 
     return 1;
@@ -320,6 +330,43 @@ static int read_partition_table(void)
 }
 
 
+static void get_mib(uint32_t size, uint32_t* int_num, uint32_t* frac_num)
+{
+    const unsigned int num = size;
+    const unsigned int den = 1024 * 1024;
+    const unsigned int precision = 2;
+    const unsigned int base = 10;
+    const unsigned int pow2_base = base*base;
+
+    *int_num = num / den;
+    *frac_num = 0;
+
+    unsigned int rem = num % den;
+    if (rem == 0)
+        return ;
+
+    unsigned int base_mul = 1;
+    for (size_t i = 0; i < precision + 1; ++i) {
+        base_mul *= base;
+    }
+
+    unsigned int base_div = base_mul * base;
+
+    for (size_t i = 0; i < precision + 1; ++i) {
+        rem *= base;
+        *frac_num += (rem / den) * base_mul;
+        rem %= den;
+        base_mul /= base;
+    }
+
+    if ((*frac_num + pow2_base/2) / base_div) {
+        *int_num  += 1;
+        *frac_num -= base_div;
+    }
+
+    *frac_num = (*frac_num + pow2_base/2) / pow2_base;
+}
+
 static void print_summary(void)
 {
     printf("Drv Bus  # Type Size   Sectors\r\n");
@@ -341,7 +388,9 @@ static void print_summary(void)
                 else
                     printf(" %s", drives[i].type);
 
-                printf("  %03lu.%02lu", MAXPHYSSECTSIZE * drives[i].size / (1024 * 1024), MAXPHYSSECTSIZE * drives[i].size % (1024 * 1024) / 10000);
+                uint32_t int_num, frac_num;
+                get_mib(MAXPHYSSECTSIZE * drives[i].size, &int_num, &frac_num);
+                printf("  %03u.%02u", int_num, frac_num);
                 printf(" %07u-%07u", drives[i].sector_start, drives[i].sector_end);
             } else {
                 // workaround for unsupported partition types
@@ -354,13 +403,58 @@ static void print_summary(void)
 
     if (skipped) {
         printf("\r\n");
-        printf("* skipped due to 1 GiB limit / unused\r\n");
-        printf("  partition / unsupported type\r\n");
+        printf("* unused / unsupported partition\r\n");
     }
 }
 
-// TODO: format utility
-// TODO: zero utility
+
+static int shrink_pte(PARTENTRY* pe, int partition, uint32_t additional_phys_sectors)
+{
+    printf("Shrink PTE[%d] by %d phys. sectors? ", partition, additional_phys_sectors);
+    char shrink_confirmation = 'n';
+    scanf("%c", &shrink_confirmation);
+    printf("\r\n");
+    shrink_confirmation = tolower(shrink_confirmation);
+
+    if (shrink_confirmation == 'y') {
+        uint32_t pe_size = pe->size;
+        swpl(pe_size);
+        pe_size = pe_size - additional_phys_sectors;
+        swpl(pe_size);
+        // TODO: LBA -> CHS
+        pe->size = pe_size;
+    }
+
+    return shrink_confirmation == 'y';
+}
+
+static int shrink_volume(struct fat16_bs* fat16, uint32_t additional_log_sectors)
+{
+    printf("Shrink volume by %d log. sectors? ", additional_log_sectors);
+    char shrink_confirmation = 'n';
+    scanf("%c", &shrink_confirmation);
+    printf("\r\n");
+    shrink_confirmation = tolower(shrink_confirmation);
+
+    if (shrink_confirmation == 'y') {
+        uint16_t sec = *(uint16_t*)fat16->sec;
+        swpw(sec);
+        if (sec) {
+            sec = sec - (uint16_t)additional_log_sectors;
+            swpw(sec);
+            memcpy(fat16->sec, &sec, sizeof(fat16->sec));
+        } else {
+            uint32_t sec2 = *(uint32_t*)fat16->sec2;
+            swpl(sec2);
+            sec2 = sec2 - additional_log_sectors;
+            swpl(sec2);
+            memcpy(fat16->sec2, &sec2, sizeof(fat16->sec2));
+        }
+    }
+
+    return shrink_confirmation == 'y';
+}
+
 static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, uint32_t ext_start, uint16_t dev, int drive)
 {
     // sanity check
@@ -381,38 +475,22 @@ static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, u
                 continue;
             }
 
-            struct fat16_bs* fat16 = (struct fat16_bs*)physsect2.sect;
-
-            uint16_t bps = *(uint16_t*)fat16->bps;
-            swpw(bps);  /* bytes per sector */
-            uint32_t sec = *(uint16_t*)fat16->sec ? *(uint16_t*)fat16->sec : *(uint32_t*)fat16->sec2;
-            swpl(sec);  /* total number of sectors */
-            char str[8+1] = {};
-            memcpy(str, fat16->fstype, sizeof(fat16->fstype));
-
-            // TODO: 150.102 ...
-            printf("[%s] %02x   %03u.%02u %07u-%07u\r\n", str, pe->type,
-                   MAXPHYSSECTSIZE * pe_size / (1024 * 1024), MAXPHYSSECTSIZE * pe_size % (1024 * 1024) / 10000,
-                   pe_start + offset, pe_start + pe_size + offset - 1);
-
-            // TODO: make it optional (what if there is no filesystem, i.e. before format)
-            if (MAXPHYSSECTSIZE * pe_size < bps * sec) {
-                memcpy(str, physsect2.sect+3, 8);
-                str[8] = '\0';
-                fprintf(stderr, "->Skipping \"%s\" (FAT16>MBR's PTE)\r\n", str);
-                continue;
-            }
-
-            // TODO: check if it lies within 1 GiB as whole (actually pe_start should be checked here, not in BGM!!!)
+            uint32_t int_num, frac_num;
+            get_mib(MAXPHYSSECTSIZE * pe_size, &int_num, &frac_num);
+            printf("           %02x   %03u.%02u %07u-%07u\r\n", pe->type, int_num, frac_num,
+                pe_start + offset, pe_start + pe_size + offset - 1);
 
             if (pe_start + offset >= drives[drive].sector_start + drives[drive].size) {
-                memcpy(str, physsect2.sect+3, 8);
-                str[8] = '\0';
-                fprintf(stderr, "->Skipping \"%s\" (pe_start>end)\r\n", str);
+                fprintf(stderr, "->Skipping (pe_start > drive end)\r\n");
                 continue;
             }
 
-            int32_t additional_phys_sectors = (pe_start + pe_size + offset) - (drives[drive].sector_start + drives[drive].size);
+            if (pe_start + offset >= GIB_SEC) {
+                fprintf(stderr, "->Skipping (pe_start > 1 GiB)\r\n");
+                continue;
+            }
+
+            int32_t additional_phys_sectors = (pe_start + pe_size + offset) - min((drives[drive].sector_start + drives[drive].size), GIB_SEC);
             if (additional_phys_sectors <= 0) {
                 fprintf(stderr, "->Skipping (volume within limits)\r\n");
                 continue;
@@ -421,69 +499,60 @@ static void fix_image_mbr(PHYSSECT sect, uint32_t offset, uint32_t prim_start, u
             uint32_t additional_bytes = additional_phys_sectors * MAXPHYSSECTSIZE;
             printf("->%u sectors (%u bytes) more!\r\n", additional_phys_sectors, additional_bytes);
 
+            if (shrink_pte(pe, i, additional_phys_sectors) && write_sector(sect.sect, dev, offset) == 0)
+                printf("MBR (sector %u) updated.\r\n", offset);
+
+            if (arg_skip_fat_check) {
+                printf("\r\n");
+                continue;
+            }
+
+            printf("\r\n");
+
+            struct fat16_bs* fat16 = (struct fat16_bs*)physsect2.sect;
+            uint16_t bps = *(uint16_t*)fat16->bps;
+            swpw(bps);  /* bytes per sector */
             uint16_t res = *(uint16_t*)fat16->res;
             swpw(res);  /* number of reserved sectors */
             uint8_t fat = fat16->fat;   /* number of FATs */
             uint16_t dir = *(uint16_t*)fat16->dir;
             swpw(dir);  /* number of DIR root entries */
+            uint32_t sec = *(uint16_t*)fat16->sec ? *(uint16_t*)fat16->sec : *(uint32_t*)fat16->sec2;
+            swpl(sec);  /* total number of sectors */
             uint16_t spf = *(uint16_t*)fat16->spf;
             swpw(spf);  /* sectors per FAT */
+
+            char str[8+1] = {};
+            memcpy(str, physsect2.sect+3, 8);
+            printf("[%s]", str);
+
+            memcpy(str, fat16->fstype, sizeof(fat16->fstype));
+            uint32_t volume_size = sec * bps / MAXPHYSSECTSIZE; // in phys. sectors
+            get_mib(volume_size, &int_num, &frac_num);
+            printf("  %s   %03u.%02u %07u-%07u\r\n", str, int_num, frac_num,
+                pe_start + offset, pe_start + volume_size + offset - 1);
 
             uint32_t additional_log_sectors = additional_bytes / bps;
             if (additional_bytes % bps != 0)
                 additional_log_sectors++;
 
+            if (MAXPHYSSECTSIZE * pe_size < bps * sec) {
+                memcpy(str, physsect2.sect+3, 8);
+                str[8] = '\0';
+                fprintf(stderr, "->Skipping \"%s\" (FAT16>MBR's PTE)\r\n", str);
+                continue;
+            }
+
+            // TODO: check for used sectors (from FAT), too
             if (sec - additional_log_sectors < res + fat*spf + (dir*32/bps)) {
                 fprintf(stderr, "->Skipping (can't shrink system sectors)\r\n");
                 continue;
             }
 
-            // TODO: check for used sectors (from FAT), too
-            uint32_t new_pe_size = pe_size - additional_phys_sectors;
-            uint32_t     new_sec = sec     - additional_log_sectors;
+            if (shrink_volume(fat16, additional_log_sectors) && write_sector(physsect2.sect, dev, pe_start + offset) == 0)
+                printf("Volume (sector %u) updated.\r\n", pe_start + offset);
+
             printf("\r\n");
-
-            printf("Shrink PTE[%d] by %d phys. sectors? ", i, pe_size - new_pe_size);
-            char shrink_pe_size = 'n';
-            scanf("%c", &shrink_pe_size);
-            printf("\r\n");
-            shrink_pe_size = tolower(shrink_pe_size);
-
-            printf("Shrink volume by %d log. sectors? ", sec - new_sec);
-            char shrink_sec = 'n';
-            scanf("%c", &shrink_sec);
-            printf("\r\n");
-            shrink_sec = tolower(shrink_sec);
-
-            // TODO: LBA -> CHS
-
-            if (shrink_pe_size == 'y') {
-                // WARNING: pe_size can't be used from now on!
-                pe_size = new_pe_size;
-                swpl(pe_size);
-                pe->size = pe_size;
-
-                if (write_sector(sect.sect, dev, offset) == 0) {
-                    printf("MBR (sector %u) updated.\r\n", offset);
-                }
-            }
-
-            if (shrink_sec == 'y') {
-                // WARNING: sec can't be used from now on!
-                if (*(uint16_t*)fat16->sec) {
-                    uint16_t sec16 = (uint16_t)new_sec;
-                    swpw(sec16);
-                    memcpy(fat16->sec, &sec16, sizeof(fat16->sec));
-                } else {
-                    sec = new_sec;
-                    swpl(sec);
-                    memcpy(fat16->sec2, &sec, sizeof(fat16->sec2));
-                }
-
-                if (write_sector(physsect2.sect, dev, pe_start + offset) == 0) {
-                    printf("Volume (sector %u) updated.\r\n", pe_start + offset);
-                }
-            }
         }
 
         if (pe->type == 0x05 ||  pe->type == 0x0f) {
@@ -530,8 +599,8 @@ int main(int argc, const char* argv[])
 
             if (read_sector(physsect.sect, dev, drives[i].sector_start + 1) != 0) {
                 fprintf(stderr, "Skipping '%c:' drive (root sector failure)\r\n", drives[i].drive);
-                drives[i].drive = '\0';
                 printf("\r\n");
+                drives[i].drive = '\0';
                 continue;
             }
 
