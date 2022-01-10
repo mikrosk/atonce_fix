@@ -1,0 +1,32 @@
+diff --git a/bios/blkdev.c b/bios/blkdev.c
+index eb7c15ed..7eebd3c1 100644
+--- a/bios/blkdev.c
++++ b/bios/blkdev.c
+@@ -367,12 +367,22 @@ int add_partition(UWORD unit, LONG *devices_available, char id[], ULONG start, U
+         KDEBUG((" %c=$%02x",'A'+logical,id[2]));
+     KDEBUG((",start=%ld,size=%ld\n",start,size));
+ 
+-    b->id[0] = id[0];
+-    b->id[1] = id[1];
+-    b->id[2] = id[2];
++    if (logical == 3 || logical == 4) {
++        KDEBUG(("Patching BGM to \\0D6\n"));
++        b->id[0] = '\0';
++        b->id[1] = 'D';
++        b->id[2] = 0x6;
++        b->start = start + 35;
++        b->size  = size - 35;
++    } else {
++        b->id[0] = id[0];
++        b->id[1] = id[1];
++        b->id[2] = id[2];
++        b->start = start;
++        b->size  = size;
++    }
++
+     b->id[3] = '\0';
+-    b->start = start;
+-    b->size  = size;
+ 
+     b->flags = DEVICE_VALID;
+     b->mediachange = MEDIANOCHANGE;
