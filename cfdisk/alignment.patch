@@ -1,0 +1,13 @@
+diff --git a/libfdisk/src/alignment.c b/libfdisk/src/alignment.c
+index 3ae721913..98065356b 100644
+--- a/libfdisk/src/alignment.c
++++ b/libfdisk/src/alignment.c
+@@ -427,7 +427,7 @@ void fdisk_zeroize_device_properties(struct fdisk_context *cxt)
+ 	cxt->min_io_size = 0;
+ 	cxt->phy_sector_size = 0;
+ 	cxt->sector_size = 0;
+-	cxt->alignment_offset = 0;
++	cxt->alignment_offset = 34 * 512;
+ 	cxt->grain = 0;
+ 	cxt->first_lba = 0;
+ 	cxt->last_lba = 0;

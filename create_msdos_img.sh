@@ -11,14 +11,20 @@ fi
 
 start_sector=${1}
 end_sector=${2}
-count=$(($end_sector-$start_sector+1-1))
+count=$(($end_sector-($start_sector+1)+1))
 disk_image=${3}
 
 tmp_file=$(mktemp)
-dd if="$disk_image" of="$tmp_file" bs=512 skip=$(($start_sector+1)) count="$count" 2> /dev/null
+#dd if="$disk_image" of="$tmp_file" bs=512 skip=$(($start_sector+1)) count="$count" 2> /dev/null
+dd if=/dev/zero of="$tmp_file" bs=512 count="$count" 2> /dev/null
 
 echo "Starting cfdisk..."
-cfdisk "$tmp_file"
+#cfdisk "$tmp_file"
+LD_LIBRARY_PATH=cfdisk cfdisk "$tmp_file"
+
+echo
+echo "Writing bootstrap code into MBR..."
+dd if=bootstrap.bin of="$tmp_file" bs=512 count=1 conv=notrunc 2> /dev/null
 
 fdisk -c=dos -b 512 -t dos -o Start,Sectors,Type -l "$tmp_file" | grep FAT16 | while IFS=' ' read -r start sectors fstype
 do
