@@ -15,13 +15,17 @@ count=$(($end_sector-($start_sector+1)+1))
 disk_image=${3}
 
 tmp_file=$(mktemp)
+# TODO: parameter ci chcem zmazat alebo ponechat MBR
+# TODO: take care of Atari FAT tables, so we skip them / null them
 #dd if="$disk_image" of="$tmp_file" bs=512 skip=$(($start_sector+1)) count="$count" 2> /dev/null
 dd if=/dev/zero of="$tmp_file" bs=512 count="$count" 2> /dev/null
+#dd if=/dev/zero of="$disk_image" bs=512 seek=$(($start_sector+1)) count="$count" conv=notrunc 2> /dev/null
 
 echo "Starting cfdisk..."
 #cfdisk "$tmp_file"
 LD_LIBRARY_PATH=cfdisk cfdisk "$tmp_file"
 
+# TODO: MBR & whole part su rozdielne switche!
 echo
 echo "Writing bootstrap code into MBR..."
 dd if=bootstrap.bin of="$tmp_file" bs=512 count=1 conv=notrunc 2> /dev/null
@@ -52,5 +56,6 @@ case $yn in
 esac
 
 rm "$tmp_file"
+#echo $tmp_file
 
 echo "Done."
