@@ -3,16 +3,16 @@ TARGET = atn_fix.ttp
 CROSS = yes
 
 ifneq (,$(filter $(CROSS),Y yes))
-        CROSSPREFIX=m68k-atari-mint-
+        CROSSPREFIX=m68k-atari-mintelf-
 endif
 
-PREFIX=$(shell $(CROSSPREFIX)gcc -print-sysroot)/usr
+PREFIX=$(shell $(CROSSPREFIX)gcc -print-sysroot)/opt
 ifeq ($(PREFIX),)
-  PREFIX=/usr
+  PREFIX=/opt
 endif
 
-LIBCMINI_INCLUDE = $(PREFIX)/include/libcmini
-LIBCMINI_LIB     = $(PREFIX)/lib/libcmini
+LIBCMINI_INCLUDE = $(PREFIX)/libcmini/include
+LIBCMINI_LIB     = $(PREFIX)/libcmini/lib
 LIBCMINI_STARTUP = $(LIBCMINI_LIB)
 
 CC      = $(CROSSPREFIX)gcc

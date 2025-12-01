@@ -42,12 +42,12 @@ static int num_warnings;
 
 static int32_t read_sector(uint8_t* buffer, uint16_t dev, uint32_t sector)
 {
-    return Rwabs2((0<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), buffer, 1, sector, dev);
+    return Lrwabs((0<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), buffer, 1, sector, dev);
 }
 
 static int32_t write_sector(uint8_t* buffer, uint16_t dev, uint32_t sector)
 {
-    return Rwabs2((1<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), buffer, 1, sector, dev);
+    return Lrwabs((1<<RW_WRITE) | (1<<RW_NOMEDIACH) | (0<<RW_NORETRIES) | (1<<RW_NOTRANSLATE), buffer, 1, sector, dev);
 }
 
 
